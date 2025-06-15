@@ -1,0 +1,103 @@
+-- ================================
+-- PIZZATIME
+-- ================================
+
+CREATE SCHEMA IF NOT EXISTS pizzatime;
+SET search_path TO pizzatime;
+
+CREATE TABLE IF NOT EXISTS pizzatime.pizzas (
+    id SERIAL PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    price NUMERIC(6,2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pizzatime.orders (
+    id SERIAL PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    pizza_name TEXT NOT NULL,
+    price NUMERIC(6,2) NOT NULL,
+    status TEXT CHECK (status IN ('в процессе...', 'готов!')) DEFAULT 'в процессе...',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO pizzatime.pizzas (name, price) VALUES
+('Маргарита', 400),
+('Пепперони', 520),
+('Четыре сыра', 470)
+ON CONFLICT (name) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION pizzatime.getpizza(pizza TEXT DEFAULT NULL, name TEXT DEFAULT NULL)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    p_price NUMERIC;
+    r RECORD;
+BEGIN
+    IF pizza IS NULL OR name IS NULL THEN
+        RAISE NOTICE '--- МЕНЮ ПИЦЦЕРИИ ---';
+        FOR r IN SELECT a.name, a.price FROM pizzatime.pizzas a LOOP
+            RAISE NOTICE '% - % руб.', r.name, r.price;
+        END LOOP;
+
+        RAISE NOTICE '';
+        RAISE NOTICE 'Чтобы сделать заказ, вызовите: SELECT pizzatime.getpizza(pizza => ''Пепперони'', name => ''ВашеИмя'');';
+        RETURN;
+    END IF;
+
+    SELECT a.price INTO p_price
+    FROM pizzatime.pizzas a
+    WHERE lower(a.name) = lower(pizza);
+
+    IF NOT FOUND THEN
+        RAISE NOTICE 'Такой пиццы не найдено: "%"', pizza;
+        RAISE NOTICE 'Попробуйте снова. Вот меню:';
+        PERFORM pizzatime.getpizza();  -- Показать меню снова
+        RETURN;
+    END IF;
+
+    INSERT INTO pizzatime.orders (client_name, pizza_name, price)
+    VALUES (name, pizza, p_price);
+
+    RAISE NOTICE 'Заказ принят! Сумма заказа: % руб.', p_price;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE pizzatime.update_order_statuses()
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE pizzatime.orders
+    SET status = 'готов!'
+    WHERE status = 'в процессе...'
+      AND created_at <= CURRENT_TIMESTAMP - INTERVAL '15 minutes';
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE pizzatime.show_board()
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    r RECORD;
+BEGIN
+    RAISE NOTICE '--- АКТИВНЫЕ ЗАКАЗЫ (последние 30 минут) ---';
+
+    FOR r IN
+        SELECT o.client_name, o.pizza_name, o.status, o.created_at
+        FROM pizzatime.orders o
+        WHERE o.status IN ('в процессе...', 'готов!')
+          AND o.created_at >= CURRENT_TIMESTAMP - INTERVAL '30 minutes'
+        ORDER BY o.created_at
+    LOOP
+        RAISE NOTICE 'Заказ для %: % — % (%).',
+            r.client_name, r.pizza_name, r.status, to_char(r.created_at, 'HH24:MI:SS');
+    END LOOP;
+END;
+$$;
+
+
+-- Используйте:
+-- SELECT pizzatime.getpizza(); - меню
+-- SELECT pizzatime.getpizza(pizza => 'Пепперони', name => 'Никита'); - пример заказа
+-- CALL pizzatime.update_order_statuses(); - обновление статуса
+-- CALL pizzatime.show_board(); - табло заказов
